@@ -15,6 +15,7 @@ from ..models import Conversation, Message, Run
 from ..providers.base import ChatMessage
 from ..tools.base import ToolContext, tool_registry
 from .council import run_council
+from .dynamic import run_dynamic, synthesize_dynamic
 from .events import bus
 from .router import build_plan
 from .runner import AgentSpec, AllCandidatesFailed, ModelRef, run_tool_agent
@@ -220,6 +221,134 @@ async def execute_run(run_id: str, conversation_id: str, mode: str,
             final_text = wf_result["final"]
             for outputs in wf_result.get("nodes", {}).values():
                 agent_messages.append((outputs, "workflow"))
+
+        elif mode == "dynamic":
+            dynamic_state = await run_dynamic(
+                problem=question,
+                run_id=run_id,
+                adapters=adapters,
+                project_id=project_id,
+                max_steps=int(config.get("max_steps", 10)),
+            )
+
+            # Dynamic mode deliberately does NOT choose among
+            # independent candidate answers. The investigation is
+            # synthesized only after the adaptive task graph finishes.
+            synthesis = await synthesize_dynamic(
+                dynamic_state,
+                adapters=adapters,
+                run_id=run_id,
+                project_id=project_id,
+                temperature=float(config.get("synthesis_temperature", 0.3)),
+            )
+
+            contributions = dynamic_state.contributions
+
+            final_text = synthesis.text
+
+            totals = {
+                "input_tokens": sum(
+                    c.metadata.get("input_tokens", 0)
+                    for c in contributions
+                ) + synthesis.usage.input_tokens,
+                "output_tokens": sum(
+                    c.metadata.get("output_tokens", 0)
+                    for c in contributions
+                ) + synthesis.usage.output_tokens,
+                "cost": sum(
+                    c.metadata.get("cost", 0.0)
+                    for c in contributions
+                ) + synthesis.usage.cost,
+                "calls": len(contributions) + 1,
+            }
+
+            contributors = [
+                {
+                    "label": c.agent,
+                    "provider": c.metadata.get("provider"),
+                    "model": c.metadata.get("model"),
+                    "output_tokens": c.metadata.get("output_tokens", 0),
+                    "cost": c.metadata.get("cost", 0.0),
+                }
+                for c in contributions
+            ]
+
+            contributors.append({
+                "label": "dynamic:synthesizer",
+                "provider": synthesis.provider,
+                "model": synthesis.model,
+                "output_tokens": synthesis.usage.output_tokens,
+                "cost": synthesis.usage.cost,
+            })
+
+            result = {
+                "final": final_text,
+                "totals": totals,
+                "contributors": contributors,
+                "state": {
+                    "problem": dynamic_state.problem,
+                    "tasks": {
+                        task_id: {
+                            "id": task.id,
+                            "description": task.description,
+                            "role": task.role,
+                            "depends_on": task.depends_on,
+                            "reason": task.reason,
+                            "context": task.context,
+                            "status": task.status,
+                            "assigned_to": task.assigned_to,
+                        }
+                        for task_id, task in dynamic_state.tasks.items()
+                    },
+                    "contributions": [
+                        {
+                            "id": c.id,
+                            "task_id": c.task_id,
+                            "agent": c.agent,
+                            "role": c.role,
+                            "content": c.content,
+                            "confidence": c.confidence,
+                            "metadata": c.metadata,
+                        }
+                        for c in contributions
+                    ],
+                    "facts": dynamic_state.facts,
+                    "hypotheses": dynamic_state.hypotheses,
+                    "contradictions": dynamic_state.contradictions,
+                    "verified_claims": dynamic_state.verified_claims,
+                    "failed_attempts": dynamic_state.failed_attempts,
+                },
+            }
+
+            agent_messages.append((
+                [
+                    {
+                        "ok": True,
+                        "text": c.content,
+                        "label": c.agent,
+                        "provider": c.metadata.get("provider"),
+                        "model": c.metadata.get("model"),
+                        "input_tokens": c.metadata.get("input_tokens", 0),
+                        "output_tokens": c.metadata.get("output_tokens", 0),
+                        "cost": c.metadata.get("cost", 0.0),
+                        "latency_ms": c.metadata.get("latency_ms", 0),
+                        "stage": c.role,
+                    }
+                    for c in contributions
+                ] + [{
+                    "ok": True,
+                    "text": synthesis.text,
+                    "label": "dynamic:synthesizer",
+                    "provider": synthesis.provider,
+                    "model": synthesis.model,
+                    "input_tokens": synthesis.usage.input_tokens,
+                    "output_tokens": synthesis.usage.output_tokens,
+                    "cost": synthesis.usage.cost,
+                    "latency_ms": synthesis.latency_ms,
+                    "stage": "synthesis",
+                }],
+                "dynamic",
+            ))
 
         else:
             raise ValueError(f"unknown mode {mode}")

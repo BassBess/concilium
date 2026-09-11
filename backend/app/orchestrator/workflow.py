@@ -30,6 +30,7 @@ from .events import bus
 from .roles import role_prompt
 from .router import analyze_task, rank_candidates
 from .runner import AgentSpec, AllCandidatesFailed, ModelRef, run_tool_agent
+from .state import ProblemState, Task, Contribution
 
 
 @dataclass
@@ -60,7 +61,7 @@ async def _auto_refs(count: int, question: str, adapters) -> list[dict[str, str]
     if not refs:
         raise AllCandidatesFailed(["No enabled models available for workflow node"])
     while len(refs) < count:  # repeat best models if fewer than count
-        refs.append(refs[len(ref) % len(refs)])
+        refs.append(refs[len(refs) % len(refs)])
     return refs
 
 
@@ -101,6 +102,20 @@ async def run_workflow(
     results: dict[str, NodeResult] = {}
     all_outputs: list[AgentOutput] = []
     total_calls = 0
+
+    # Shared evolving state. Execution remains DAG-based for now;
+    # this state becomes the foundation for dynamic planning later.
+    state = ProblemState(problem=question)
+
+    for node in nodes:
+        state.add_task(
+            Task(
+                id=node["id"],
+                description=node.get("instruction") or node.get("role", "workflow task"),
+                role=node.get("role", ""),
+                depends_on=list(node.get("depends_on", [])),
+            )
+        )
 
     await bus.publish(run_id, "workflow_started", levels=[[n["id"] for n in lvl] for lvl in levels])
 
@@ -151,6 +166,26 @@ async def run_workflow(
             nr = NodeResult(node["id"], outs)
             results[node["id"]] = nr
             all_outputs.extend(o for o in outs if o.ok)
+
+            state.set_task_status(node["id"], "completed")
+
+            for o in outs:
+                if o.ok and o.text:
+                    state.add_contribution(
+                        Contribution(
+                            id=o.label,
+                            task_id=node["id"],
+                            agent=o.provider or o.model or o.label,
+                            role=o.role,
+                            content=o.text,
+                            metadata={
+                                "provider": o.provider,
+                                "model": o.model,
+                                "stage": o.stage,
+                            },
+                        )
+                    )
+
             return nr
 
         level_results = await asyncio.gather(*[run_node(n) for n in level])
@@ -185,6 +220,30 @@ async def run_workflow(
         "final": final,
         "totals": totals,
         "nodes": {nid: [o.__dict__ for o in nr.outputs] for nid, nr in results.items()},
+        "state": {
+            "problem": state.problem,
+            "tasks": {
+                task_id: {
+                    "description": task.description,
+                    "role": task.role,
+                    "depends_on": task.depends_on,
+                    "status": task.status,
+                }
+                for task_id, task in state.tasks.items()
+            },
+            "contributions": [
+                {
+                    "id": c.id,
+                    "task_id": c.task_id,
+                    "agent": c.agent,
+                    "role": c.role,
+                    "content": c.content,
+                    "confidence": c.confidence,
+                    "metadata": c.metadata,
+                }
+                for c in state.contributions
+            ],
+        },
         "contributors": [
             {"label": o.label, "provider": o.provider, "model": o.model, "role": o.role,
              "output_tokens": o.output_tokens, "cost": o.cost, "stage": o.stage}

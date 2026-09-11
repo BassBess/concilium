@@ -218,12 +218,12 @@ async def delete_document(did: str, _: dict = Depends(require_auth)):
 
 class RunStart(BaseModel):
     question: str = Field(max_length=200_000)
-    mode: str = "council"  # single|router|council|workflow
+    mode: str = "council"  # single|router|council|workflow|dynamic
     config: dict[str, Any] = Field(default_factory=dict)
 
 
 def _validate_run(mode: str, config: dict) -> None:
-    if mode not in ("single", "router", "council", "workflow"):
+    if mode not in ("single", "router", "council", "workflow", "dynamic"):
         raise HTTPException(400, f"unknown mode {mode}")
     if mode == "council":
         n = len(config.get("participants", []))
