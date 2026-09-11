@@ -1,0 +1,41 @@
+services:
+  concilium:
+    build: .
+    image: concilium:latest
+    container_name: concilium
+    ports:
+      - "8000:8000"
+    environment:
+      # Provide keys here or via the web UI (Settings -> Providers).
+      CONCILIUM_DATA_DIR: /srv/backend/data
+      CONCILIUM_DATABASE_URL: sqlite+aiosqlite:////srv/backend/data/concilium.db
+      # Uncomment to require a login password:
+      # CONCILIUM_PASSWORD: "change-me"
+      # Free-tier remote keys (all optional):
+      # GROQ_API_KEY: "${GROQ_API_KEY}"
+      # GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
+      # OPENROADER_API_KEY: "${OPENROADER_API_KEY}"
+      # Enable the process-sandboxed Python tool (container adds isolation):
+      CONCILIUM_ENABLE_PYTHON_SANDBOX: "true"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      LMSTUDIO_BASE_URL: "http://host.docker.internal:1234/v1"
+    volumes:
+      - concilium-data:/srv/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Optional local model server. Enable with: docker compose --profile local up
+  ollama:
+    image: ollama/ollama:latest
+    container_name: concilium-ollama
+    profiles: ["local"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  concilium-data:
+  ollama-models:
