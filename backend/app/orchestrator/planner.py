@@ -10,6 +10,8 @@ class TaskProposal:
     description: str
     role: str
     depends_on: list[str]
+    reason: str = ""
+    context: str = ""
 
 
 class Planner:
@@ -50,6 +52,8 @@ class Planner:
             description=proposal.description,
             role=proposal.role,
             depends_on=list(proposal.depends_on),
+            reason=proposal.reason,
+            context=proposal.context,
         )
 
         state.add_task(task)
@@ -78,6 +82,8 @@ class LLMPlanner:
                 "description": task.description,
                 "role": task.role,
                 "depends_on": task.depends_on,
+                "reason": task.reason,
+                "context": task.context,
                 "status": task.status,
             }
             for task in state.tasks.values()
@@ -129,7 +135,9 @@ Return ONLY valid JSON in this exact shape:
     {{
       "description": "specific piece of work",
       "role": "researcher|mathematician|programmer|verifier|critic|counterexample_hunter|fact_checker|synthesizer",
-      "depends_on": ["existing_task_id"]
+      "depends_on": ["existing_task_id"],
+      "reason": "why this task is the most useful next step",
+      "context": "relevant discoveries or evidence the worker needs"
     }}
   ]
 }}

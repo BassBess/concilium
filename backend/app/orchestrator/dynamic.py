@@ -11,6 +11,116 @@ from .runner import AgentSpec, ModelRef, run_tool_agent
 from .state import Contribution, ProblemState, Task
 
 
+
+def extract_state_update(content: str) -> dict[str, list[str]]:
+    """Extract an optional structured state update from worker output.
+
+    Workers may return a JSON object inside a fenced ```json block.
+    Invalid or missing updates are ignored safely.
+    """
+    if not content:
+        return {}
+
+    candidates: list[str] = []
+
+    # First look for fenced JSON blocks.
+    lines = content.splitlines()
+    in_block = False
+    block_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not in_block and stripped.lower() == "```json":
+            in_block = True
+            block_lines = []
+            continue
+
+        if in_block and stripped == "```":
+            candidates.append("\n".join(block_lines))
+            in_block = False
+            continue
+
+        if in_block:
+            block_lines.append(line)
+
+    # Also allow a response consisting entirely of JSON.
+    candidates.append(content.strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        findings = data.get("findings")
+
+        if not isinstance(findings, dict):
+            continue
+
+        result: dict[str, list[str]] = {}
+
+        for key in (
+            "facts",
+            "hypotheses",
+            "contradictions",
+            "verified_claims",
+            "failed_attempts",
+            "unresolved_questions",
+        ):
+            value = findings.get(key, [])
+
+            if not isinstance(value, list):
+                continue
+
+            cleaned = [
+                item.strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            ]
+
+            if cleaned:
+                result[key] = cleaned
+
+        if result:
+            return result
+
+    return {}
+
+
+def apply_state_update(
+    state: ProblemState,
+    update: dict[str, list[str]],
+) -> None:
+    """Merge validated worker findings into the shared problem state."""
+
+    field_map = {
+        "facts": state.facts,
+        "hypotheses": state.hypotheses,
+        "contradictions": state.contradictions,
+        "verified_claims": state.verified_claims,
+        "failed_attempts": state.failed_attempts,
+    }
+
+    for key, values in update.items():
+        target = field_map.get(key)
+
+        # unresolved_questions is intentionally not stored yet because
+        # ProblemState does not currently have a dedicated field for it.
+        if target is None:
+            continue
+
+        for value in values:
+            if value not in target:
+                target.append(value)
+
+
 async def run_task(
     state: ProblemState,
     task_id: str,
@@ -43,17 +153,56 @@ async def run_task(
         upstream.extend(state.task_contributions(dep))
 
     prompt_parts = [
-        f"PROBLEM:\n{state.problem}",
-        f"TASK:\n{task.description}",
+        f"ORIGINAL PROBLEM:\n{state.problem}",
+        f"ASSIGNED TASK:\n{task.description}",
     ]
+
+    if task.reason:
+        prompt_parts.append(
+            f"WHY THIS TASK EXISTS:\n{task.reason}"
+        )
+
+    if task.context:
+        prompt_parts.append(
+            f"RELEVANT INVESTIGATION CONTEXT:\n{task.context}"
+        )
 
     if upstream:
         prompt_parts.append(
-            "UPSTREAM CONTRIBUTIONS:\n"
+            "DIRECT UPSTREAM CONTRIBUTIONS:\n"
             + "\n\n".join(
                 f"[{c.role}] {c.content}" for c in upstream
             )
         )
+
+    prompt_parts.append(
+        "WORKER INSTRUCTIONS:\n"
+        "Do not independently solve the entire original problem unless "
+        "that is the assigned task.\n\n"
+        "Focus on the assigned investigation step.\n\n"
+        "Clearly distinguish:\n"
+        "- what you established,\n"
+        "- what evidence supports it,\n"
+        "- what remains uncertain,\n"
+        "- and what should be investigated next.\n\n"
+        "At the end of your response, include a JSON state update in this "
+        "exact shape:\n\n"
+        "```json\n"
+        "{\n"
+        '  "findings": {\n'
+        '    "facts": [],\n'
+        '    "hypotheses": [],\n'
+        '    "contradictions": [],\n'
+        '    "verified_claims": [],\n'
+        '    "failed_attempts": [],\n'
+        '    "unresolved_questions": []\n'
+        "  }\n"
+        "}\n"
+        "```\n\n"
+        "Only include findings actually supported by your investigation.\n"
+        "Do not mark a claim as verified merely because you believe it.\n"
+        "Use an empty array when a category has no useful update."
+    )
 
     messages = [
         ChatMessage(
@@ -115,6 +264,10 @@ async def run_task(
     )
 
     state.add_contribution(contribution)
+
+    update = extract_state_update(result.text)
+    apply_state_update(state, update)
+
     state.set_task_status(task_id, "completed")
 
     return contribution
@@ -202,6 +355,8 @@ async def run_dynamic(
                     description=proposal.description,
                     role=proposal.role,
                     depends_on=list(proposal.depends_on),
+                    reason=proposal.reason,
+                    context=proposal.context,
                 )
 
                 state.add_task(new_task)
