@@ -39,6 +39,7 @@ class ProblemState:
     contradictions: list[str] = field(default_factory=list)
     verified_claims: list[str] = field(default_factory=list)
     failed_attempts: list[str] = field(default_factory=list)
+    unresolved_questions: list[str] = field(default_factory=list)
 
     def add_task(self, task: Task) -> None:
         if task.id in self.tasks:
