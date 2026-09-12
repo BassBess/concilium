@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 
 from app.orchestrator.dynamic import run_task
 from app.orchestrator.state import ProblemState, Task
@@ -492,3 +493,217 @@ async def test_dynamic_synthesizer_receives_investigation_state(monkeypatch):
     # independent candidate-answer selection.
     assert "NOT choosing the best answer from competing independent answers" in prompt
     assert "Do not describe this as a council vote or majority decision." in prompt
+
+
+def test_extract_state_update_parses_worker_findings():
+    from app.orchestrator.dynamic import extract_state_update
+
+    content = """Investigation complete.
+
+```json
+{
+  "findings": {
+    "facts": ["Fact A"],
+    "hypotheses": ["Hypothesis B"],
+    "contradictions": ["Contradiction C"],
+    "verified_claims": ["Claim D"],
+    "failed_attempts": ["Attempt E"],
+    "unresolved_questions": ["Question F"]
+  }
+}
+```"""
+
+    update = extract_state_update(content)
+
+    assert update == {
+        "facts": ["Fact A"],
+        "hypotheses": ["Hypothesis B"],
+        "contradictions": ["Contradiction C"],
+        "verified_claims": ["Claim D"],
+        "failed_attempts": ["Attempt E"],
+        "unresolved_questions": ["Question F"],
+    }
+
+
+def test_apply_state_update_merges_and_deduplicates():
+    from app.orchestrator.dynamic import apply_state_update
+
+    state = ProblemState("Test state")
+    state.facts.append("Existing fact")
+
+    apply_state_update(
+        state,
+        {
+            "facts": ["Existing fact", "New fact"],
+            "unresolved_questions": ["What remains unknown?"],
+        },
+    )
+
+    assert state.facts == ["Existing fact", "New fact"]
+    assert state.unresolved_questions == ["What remains unknown?"]
+
+
+@pytest.mark.asyncio
+async def test_planner_receives_unresolved_questions(monkeypatch):
+    from app.orchestrator.planner import LLMPlanner
+
+    state = ProblemState("Determine whether approach X works")
+    state.unresolved_questions.append(
+        "Does approach X still work when input Y is present?"
+    )
+
+    planner = LLMPlanner()
+
+    class Candidate:
+        provider_id = "fake-provider"
+
+        class Model:
+            id = "fake-model"
+
+        model = Model()
+
+    async def fake_rank(*args, **kwargs):
+        return [Candidate()]
+
+    captured = {}
+
+    async def fake_run(agent, messages, **kwargs):
+        captured["prompt"] = messages[-1].content
+
+        class PlannerResult:
+            text = '{"done": true, "tasks": []}'
+
+        return PlannerResult()
+
+    monkeypatch.setattr(
+        "app.orchestrator.planner.rank_candidates",
+        fake_rank,
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.planner.run_tool_agent",
+        fake_run,
+    )
+
+    await planner.propose(state, adapters=[])
+
+    assert "Does approach X still work when input Y is present?" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_loop_adapts_to_new_findings(monkeypatch):
+    from app.orchestrator.dynamic import run_dynamic
+    from app.orchestrator.planner import TaskProposal
+
+    state_steps = []
+
+    async def fake_run_task(state, task_id, **kwargs):
+        state.set_task_status(task_id, "completed")
+        if task_id == "task_1":
+            state.unresolved_questions.append("Does X work on case C?")
+        elif task_id == "task_2":
+            state.failed_attempts.append("X fails on case C.")
+            state.contradictions.append("X was expected to work on case C.")
+
+    class FakePlanner:
+        calls = 0
+
+        async def propose(self, state, **kwargs):
+            self.calls += 1
+            state_steps.append(
+                (
+                    self.calls,
+                    list(state.unresolved_questions),
+                    list(state.failed_attempts),
+                    list(state.contradictions),
+                )
+            )
+
+            if self.calls == 1:
+                return False, [
+                    TaskProposal(
+                        description="Test X on case C",
+                        role="tester",
+                        depends_on=["task_1"],
+                    )
+                ]
+
+            if self.calls == 2:
+                return False, [
+                    TaskProposal(
+                        description="Investigate why X fails on case C",
+                        role="researcher",
+                        depends_on=["task_2"],
+                    )
+                ]
+
+            return True, []
+
+    monkeypatch.setattr(
+        "app.orchestrator.dynamic.run_task",
+        fake_run_task,
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.dynamic.LLMPlanner",
+        FakePlanner,
+    )
+
+    state = await run_dynamic(
+        "Determine whether approach X works.",
+        adapters=[],
+        max_steps=5,
+    )
+
+    assert "Does X work on case C?" in state.unresolved_questions
+    assert "X fails on case C." in state.failed_attempts
+    assert "X was expected to work on case C." in state.contradictions
+
+    assert state.tasks["task_2"].description == "Test X on case C"
+    assert state.tasks["task_3"].description == (
+        "Investigate why X fails on case C"
+    )
+
+    assert len(state_steps) >= 2
+    assert "Does X work on case C?" in state_steps[0][1]
+
+
+@pytest.mark.asyncio
+async def test_run_until_complete_runs_independent_tasks_in_parallel(monkeypatch):
+    from app.orchestrator.dynamic import run_until_complete
+
+    state = ProblemState("Run independent tasks together")
+
+    state.add_task(Task(
+        id="task_a",
+        description="Independent task A",
+        role="researcher",
+    ))
+    state.add_task(Task(
+        id="task_b",
+        description="Independent task B",
+        role="researcher",
+    ))
+
+    started = set()
+    both_started = asyncio.Event()
+
+    async def fake_run_task(state, task_id, **kwargs):
+        started.add(task_id)
+
+        if len(started) == 2:
+            both_started.set()
+
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+
+        state.set_task_status(task_id, "completed")
+
+    monkeypatch.setattr(
+        "app.orchestrator.dynamic.run_task",
+        fake_run_task,
+    )
+
+    await run_until_complete(state, adapters=[])
+
+    assert started == {"task_a", "task_b"}
+    assert state.tasks["task_a"].status == "completed"
+    assert state.tasks["task_b"].status == "completed"
+    assert state.is_complete()

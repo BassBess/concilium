@@ -127,6 +127,9 @@ VERIFIED CLAIMS:
 FAILED ATTEMPTS:
 {json.dumps(state.failed_attempts, indent=2)}
 
+UNRESOLVED QUESTIONS:
+{json.dumps(state.unresolved_questions, indent=2)}
+
 Return ONLY valid JSON in this exact shape:
 
 {{

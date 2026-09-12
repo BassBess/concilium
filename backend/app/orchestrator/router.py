@@ -55,6 +55,7 @@ PROVIDER_SPEED = {
 @dataclass
 class TaskProfile:
     text: str
+    role: str = ""
     estimated_tokens: int = 0
     needs_vision: bool = False
     needs_code: bool = False
@@ -70,10 +71,20 @@ class TaskProfile:
         return {k: v for k, v in self.__dict__.items()}
 
 
-def analyze_task(text: str, has_images: bool = False, attached_tokens: int = 0) -> TaskProfile:
+def analyze_task(
+    text: str,
+    has_images: bool = False,
+    attached_tokens: int = 0,
+    role: str = "",
+) -> TaskProfile:
     t = text or ""
     est = max(1, len(t) // 4) + attached_tokens
-    p = TaskProfile(text=t, estimated_tokens=est, needs_vision=has_images)
+    p = TaskProfile(
+        text=t,
+        role=role,
+        estimated_tokens=est,
+        needs_vision=has_images,
+    )
     if has_images:
         p.required.append(Capability.VISION.value)
         p.reasons.append("image input requires a vision model")
@@ -186,6 +197,64 @@ async def rank_candidates(
             if Capability.TOOLS.value in m.capabilities and profile.needs_research:
                 score += 1.5
                 reasons.append("tool-calling for research")
+
+            # Role-aware specialization.
+            # These are soft preferences layered on top of hard capabilities.
+            role = profile.role.lower().strip()
+
+            if role in {"mathematician", "math", "theorist"}:
+                if Capability.REASONING.value in m.capabilities:
+                    score += 2.5
+                    reasons.append("math/theory role fit via reasoning")
+                if m.family and any(
+                    token in m.family.lower()
+                    for token in ("reason", "math", "think")
+                ):
+                    score += 1.5
+                    reasons.append("math/reasoning model family")
+
+            elif role in {"programmer", "coder", "developer"}:
+                if Capability.CODE.value in m.capabilities:
+                    score += 2.5
+                    reasons.append("programming role fit")
+                if Capability.TOOLS.value in m.capabilities:
+                    score += 0.5
+                    reasons.append("tools useful for programming")
+
+            elif role in {
+                "researcher",
+                "fact_checker",
+                "fact-checker",
+                "web_researcher",
+            }:
+                if Capability.TOOLS.value in m.capabilities:
+                    score += 2.5
+                    reasons.append("research role fit via tools")
+                if m.context_window >= 16000:
+                    score += 0.5
+                    reasons.append("large context useful for research")
+
+            elif role in {
+                "critic",
+                "counterexample_hunter",
+                "counterexample-hunter",
+                "verifier",
+            }:
+                if Capability.REASONING.value in m.capabilities:
+                    score += 2.5
+                    reasons.append("verification/critique role fit")
+                if Capability.CODE.value in m.capabilities and profile.needs_code:
+                    score += 1.0
+                    reasons.append("code support useful for verification")
+
+            elif role in {"synthesizer", "planner"}:
+                if Capability.REASONING.value in m.capabilities:
+                    score += 2.0
+                    reasons.append("planning/synthesis reasoning fit")
+                if m.context_window >= 16000:
+                    score += 1.0
+                    reasons.append("large context useful for synthesis")
+
             # live health
             st = quota_manager.state(quota_manager.key(adapter.type_key, m.id))
             import time

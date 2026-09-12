@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import json
 
 from typing import Any
@@ -106,6 +108,7 @@ def apply_state_update(
         "contradictions": state.contradictions,
         "verified_claims": state.verified_claims,
         "failed_attempts": state.failed_attempts,
+        "unresolved_questions": state.unresolved_questions,
     }
 
     for key, values in update.items():
@@ -289,14 +292,18 @@ async def run_until_complete(
         if not runnable:
             break
 
-        for task in runnable:
-            await run_task(
-                state,
-                task.id,
-                run_id=run_id,
-                adapters=adapters,
-                project_id=project_id,
+        await asyncio.gather(
+            *(
+                run_task(
+                    state,
+                    task.id,
+                    run_id=run_id,
+                    adapters=adapters,
+                    project_id=project_id,
+                )
+                for task in runnable
             )
+        )
 
     return state
 
@@ -433,6 +440,9 @@ and produce one rigorous answer to the original problem.
 
 ================ FAILED ATTEMPTS ================
 {json.dumps(state.failed_attempts, indent=2)}
+
+================ UNRESOLVED QUESTIONS ================
+{json.dumps(state.unresolved_questions, indent=2)}
 
 ================ SYNTHESIS RULES ================
 1. Do not assume a claim is true merely because an agent stated it.
