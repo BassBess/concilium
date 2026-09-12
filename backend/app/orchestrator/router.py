@@ -147,6 +147,38 @@ def _has_cap(model: ModelInfo, cap: str) -> bool:
     return cap in model.capabilities
 
 
+def filter_adapters_by_resource(
+    adapters: list[ProviderAdapter],
+    resource_id: str | None,
+) -> list[ProviderAdapter]:
+    """Restrict routing to the provider selected by the scheduler.
+
+    resource_id is expected to look like ``llm:<provider-instance-id>``.
+    If no resource is selected, the normal global router is preserved.
+    """
+
+    if not resource_id:
+        return adapters
+
+    if not resource_id.startswith("llm:"):
+        return []
+
+    provider_id = resource_id.removeprefix("llm:")
+
+    filtered = [
+        adapter
+        for adapter in adapters
+        if str(
+            getattr(adapter, "instance_id", None)
+            or getattr(adapter, "id", None)
+            or getattr(adapter, "provider_id", None)
+            or getattr(adapter, "provider_type", None)
+        ) == provider_id
+    ]
+
+    return filtered
+
+
 async def rank_candidates(
     adapters: list[ProviderAdapter],
     profile: TaskProfile,

@@ -9,18 +9,16 @@ from .router import TaskProfile
 
 
 class Scheduler:
-    """Choose computational resources for a task.
+    """Choose the computational resource for a task.
 
-    This is intentionally separate from the LLM router.
+    The scheduler decides WHICH RESOURCE CLASS / PROVIDER should perform
+    the task.
 
-    The router answers:
-        "Which model is best?"
+    The existing router remains responsible for deciding WHICH MODEL
+    inside an LLM provider should perform it.
 
-    The scheduler answers:
-        "Which computational resource should perform this task?"
-
-    Today the registry can contain LLM resources. Later it can contain
-    Python, C++, web, symbolic, database, vision, or external API resources.
+    This separation is important for Concilium's eventual large provider
+    ecosystem.
     """
 
     def __init__(self, registry: ResourceRegistry | None = None) -> None:
@@ -53,23 +51,27 @@ class Scheduler:
                 score += 1.0
                 reasons.append("comfortable context headroom")
 
-        if resource.free or resource.local:
-            score += 2.0
-            reasons.append("free/local")
+        if resource.free:
+            score += 1.5
+            reasons.append("free")
+
+        if resource.local:
+            score += 1.5
+            reasons.append("local")
 
         if resource.estimated_latency_ms is not None:
-            # Reward low latency without letting speed dominate capability fit.
-            speed_score = max(
-                0.0,
-                1.0 - math.log10(max(1, resource.estimated_latency_ms)) / 6.0,
-            )
+            latency = max(1, resource.estimated_latency_ms)
+            speed_score = max(0.0, 1.0 - math.log10(latency) / 6.0)
             score += speed_score
-            if resource.estimated_latency_ms < 5000:
+
+            if latency < 5000:
                 reasons.append("low estimated latency")
 
         if resource.estimated_cost is not None:
-            score -= min(2.0, math.log10(1 + max(0.0, resource.estimated_cost)))
-            if resource.estimated_cost == 0:
+            cost = max(0.0, resource.estimated_cost)
+            score -= min(2.0, math.log10(1.0 + cost))
+
+            if cost == 0:
                 reasons.append("zero estimated cost")
 
         role = profile.role.lower().strip()
@@ -125,12 +127,19 @@ class Scheduler:
 
         for resource in self.registry.all():
             assignment = self._score(resource, profile)
+
             if assignment is not None:
                 assignments.append(assignment)
 
-        assignments.sort(key=lambda item: item.score, reverse=True)
+        assignments.sort(
+            key=lambda assignment: assignment.score,
+            reverse=True,
+        )
 
-        return assignments[: n or len(assignments)]
+        if n is None:
+            return assignments
+
+        return assignments[:n]
 
     def select(
         self,

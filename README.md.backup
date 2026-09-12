@@ -1,21 +1,19 @@
 # ◈ Concilium
 
-**A universal AI interface and heterogeneous computation layer.**
+**A universal multi-model AI interface and orchestration platform.**
 
-Concilium sits *above* many AI models, providers, local servers, APIs and
-tools, coordinating them as one computational system. Problems can be
-decomposed into tasks, assigned to specialized resources, executed in
-parallel, and fed back into a shared problem state so the system can decide
-what to investigate next.
-
-Councils and workflows are supported, but they are only execution modes.
-The larger goal is a general orchestration layer where LLMs, code execution,
-web search, APIs and other computational resources can work together.
+Instead of chatting with one model at a time, Concilium sits *above* many
+models, providers, local servers and tools. It calls models **in parallel**,
+lets them **critique and debate**, **revises** answers, **synthesizes** a
+final result, and shows you the entire process. When a provider rate-limits or
+fails, the model enters a transparent **cooldown** and work **fails over** to
+another healthy model.
 
 It is **general-purpose**: research, reasoning, coding, writing, analysis,
-planning, experimentation and debugging. It works offline through deterministic
-mock models and can use remote providers, free tiers, or local Ollama/LM Studio
-models.
+planning, brainstorming and debugging. It works **offline out of the box** via
+built-in deterministic mock models, and gets powerful as soon as you point it
+at free remote tiers (Gemini, Groq, OpenRouter, Mistral, Cohere), paid APIs, or
+local Ollama/LM Studio models.
 
 > ⚠️ Concilium never bypasses authentication, rate limits, CAPTCHAs, paywalls or
 > quotas. When a provider says *stop*, the model cools down and another one
@@ -57,11 +55,11 @@ Docs: [QUICKSTART.md](QUICKSTART.md) · [ARCHITECTURE.md](ARCHITECTURE.md) ·
 
 | Feature | What you get |
 |---|---|
-| **Execution modes** | Single model · Auto-router · Multi-model **Council** · reusable **Workflows** |
+| **Four interaction modes** | Single model · Auto-router · Multi-model **Council** · reusable **Workflows** |
 | **Provider adapters** | OpenAI, Anthropic, Google Gemini, Groq, Mistral, Together, OpenRouter, xAI Grok, Cohere, Ollama, LM Studio, any OpenAI-compatible endpoint, plus offline mocks |
-| **Dynamic orchestration** | Tasks, specialists, shared state and adaptive follow-up work |
+| **Council / debate** | Independent parallel answers → critique rounds → revisions → synthesis, fully configurable |
 | **13 agent roles** | Researcher, Explorer, Critic, Skeptic, Programmer, Mathematician, Fact checker, Summarizer, Planner, Proof reviewer, Creative, Synthesizer, Judge — plus custom roles/prompts |
-| **Smart scheduling & routing** | Scheduler selects resources; router selects models using capabilities, cost, speed and **live health** |
+| **Smart routing** | Task analysis (code / math / vision / reasoning / long-context / research / creative) ranks models by capability, free tier, speed, cost and **live health** |
 | **Parallelism** | Independent agents run concurrently with per-provider concurrency limits |
 | **Resilience** | Retry + exponential backoff, provider cooldowns (`retry-after` aware), automatic cross-model failover, deterministic aggregation fallback — one failure never collapses the council |
 | **Quotas** | RPM/TPM windows, daily/monthly caps, request & token counters, estimated free-tier remaining capacity |
@@ -76,33 +74,20 @@ Docs: [QUICKSTART.md](QUICKSTART.md) · [ARCHITECTURE.md](ARCHITECTURE.md) ·
 
 ```
 USER
+  │  browser (React/TS SPA)
+  ▼
+FastAPI (HTTP + SSE live events)
   │
   ▼
-FastAPI / Run Engine
+Run engine ── mode dispatch ─┬─ Single / Auto-router
+                             ├─ Council engine (answer → critique → revise → synthesize)
+                             └─ Workflow engine (DAG of role-based fan-out/fan-in)
   │
-  ├── Planner ──► decomposes the problem into tasks
-  │
-  ├── Scheduler ──► selects the best computational resource
-  │
-  ├── Router ──► selects the best model inside an LLM resource
-  │
-  ├── Runner ──► quotas, retries, cooldowns, failover
-  │
-  └── Tools / Executors
-          │
-          ▼
-    Shared ProblemState
-          │
-          ▼
-    New discoveries / tasks
-          │
-          └──────────► Planner
-
-Resources currently include LLM providers and tools.
-The architecture is being extended toward Python, C++, web, APIs and other
-specialized computational resources.
-
-Provider registry
+  ├── Router (task analysis → ranked model plan)
+  ├── Resilient runner (semaphores → quotas → retry/backoff → cooldown → failover)
+  ├── Tool runtime (permission-gated tools; untrusted-output wrapping)
+  ▼
+Provider registry (auto-discovered adapters + configured instances)
   ├── OpenAI-compatible base → OpenAI, Groq, Together, OpenRouter, xAI, Mistral, LM Studio, custom
   ├── Anthropic Messages API
   ├── Google Gemini API

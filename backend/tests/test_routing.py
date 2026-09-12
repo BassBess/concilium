@@ -1,5 +1,6 @@
 """Smart routing: task analysis and candidate ranking."""
 from __future__ import annotations
+import pytest
 
 from app.orchestrator.router import analyze_task, rank_candidates
 from app.providers.base import Capability
@@ -174,3 +175,82 @@ def test_scheduler_respects_context_capacity():
     )
 
     assert scheduler.select(profile) is None
+
+
+@pytest.mark.asyncio
+async def test_llm_adapters_become_scheduler_resources():
+    from app.orchestrator.resources import build_resource_registry
+
+    class FakeModel:
+        capabilities = ["chat", "reasoning"]
+        context_window = 32768
+        free_tier = True
+
+    class FakeAdapter:
+        instance_id = "provider-a"
+        provider_type = "fake"
+        label = "Provider A"
+        enabled = True
+
+        async def get_models(self):
+            return [FakeModel()]
+
+    registry = await build_resource_registry([FakeAdapter()])
+
+    resource = registry.get("llm:provider-a")
+
+    assert resource is not None
+    assert resource.kind == "llm"
+    assert resource.provider == "fake"
+    assert resource.free is True
+    assert resource.metadata["model_count"] == 1
+    assert "reasoning" in resource.capabilities
+
+
+@pytest.mark.asyncio
+async def test_broken_provider_does_not_block_resource_discovery():
+    from app.orchestrator.resources import build_resource_registry
+
+    class BrokenAdapter:
+        instance_id = "broken"
+        provider_type = "broken"
+        label = "Broken"
+        enabled = True
+
+        async def get_models(self):
+            raise RuntimeError("provider unavailable")
+
+    class WorkingModel:
+        capabilities = ["chat"]
+        context_window = 8192
+        free_tier = False
+
+    class WorkingAdapter:
+        instance_id = "working"
+        provider_type = "working"
+        label = "Working"
+        enabled = True
+
+        async def get_models(self):
+            return [WorkingModel()]
+
+    registry = await build_resource_registry(
+        [BrokenAdapter(), WorkingAdapter()]
+    )
+
+    assert registry.get("llm:broken") is None
+    assert registry.get("llm:working") is not None
+
+
+def test_scheduler_resource_filter_preserves_global_router():
+    from app.orchestrator.router import filter_adapters_by_resource
+
+    class Adapter:
+        def __init__(self, instance_id):
+            self.instance_id = instance_id
+
+    adapters = [Adapter("a"), Adapter("b")]
+
+    assert filter_adapters_by_resource(adapters, None) == adapters
+    assert filter_adapters_by_resource(adapters, "llm:a") == [adapters[0]]
+    assert filter_adapters_by_resource(adapters, "llm:missing") == []
