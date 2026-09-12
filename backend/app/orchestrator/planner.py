@@ -149,6 +149,12 @@ Rules:
 - Propose only work that is genuinely useful.
 - Prefer verification, falsification, testing, or resolving contradictions when appropriate.
 - Do not duplicate completed work.
+- Prefer complementary specialists over several agents performing the same kind of investigation.
+- When the problem benefits from independent perspectives, propose multiple tasks with distinct roles.
+- Useful role combinations can include mathematician + programmer, researcher + fact_checker, or researcher + critic.
+- Independent tasks should have no dependency on each other so they can run concurrently.
+- Give each task a distinct investigative objective.
+- Use dependencies when a later specialist genuinely needs an earlier result.
 - Every dependency must reference an existing task.
 - If enough evidence exists to finish, return "done": true and an empty task list.
 - Do not invent task IDs.

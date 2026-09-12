@@ -64,3 +64,113 @@ async def test_cooling_models_deprioritized():
     cooled = [c for c in ranked if c.model.id == "mock-general"][0]
     assert cooled.cooling is True
     assert ranked[-1].score <= cooled.score + 0.01 or cooled not in ranked[:2]
+
+
+def test_scheduler_prefers_resource_matching_specialist_role():
+    from app.orchestrator.resources import ResourceRegistry, ResourceSpec
+    from app.orchestrator.router import analyze_task
+    from app.orchestrator.scheduler import Scheduler
+
+    registry = ResourceRegistry()
+
+    registry.register(ResourceSpec(
+        id="generic",
+        kind="llm",
+        capabilities=["chat"],
+        free=True,
+        estimated_latency_ms=1000,
+    ))
+
+    registry.register(ResourceSpec(
+        id="math-model",
+        kind="llm",
+        capabilities=["chat", "reasoning"],
+        free=True,
+        estimated_latency_ms=1000,
+    ))
+
+    scheduler = Scheduler(registry)
+    profile = analyze_task(
+        "solve this mathematical problem",
+        role="mathematician",
+    )
+
+    selected = scheduler.select(profile)
+
+    assert selected is not None
+    assert selected.resource.id == "math-model"
+
+
+def test_scheduler_can_represent_non_llm_resources():
+    from app.orchestrator.resources import ResourceRegistry, ResourceSpec
+    from app.orchestrator.router import analyze_task
+    from app.orchestrator.scheduler import Scheduler
+
+    registry = ResourceRegistry()
+
+    registry.register(ResourceSpec(
+        id="python",
+        kind="runtime",
+        name="Python execution",
+        capabilities=["chat", "code"],
+        local=True,
+        estimated_latency_ms=100,
+    ))
+
+    scheduler = Scheduler(registry)
+
+    profile = analyze_task(
+        "write and execute code to test this hypothesis",
+        role="programmer",
+    )
+
+    selected = scheduler.select(profile)
+
+    assert selected is not None
+    assert selected.resource.id == "python"
+
+
+def test_scheduler_rejects_resource_missing_required_capability():
+    from app.orchestrator.resources import ResourceRegistry, ResourceSpec
+    from app.orchestrator.router import analyze_task
+    from app.orchestrator.scheduler import Scheduler
+
+    registry = ResourceRegistry()
+
+    registry.register(ResourceSpec(
+        id="chat-only",
+        kind="llm",
+        capabilities=["chat"],
+    ))
+
+    scheduler = Scheduler(registry)
+
+    profile = analyze_task(
+        "analyze this image",
+        has_images=True,
+    )
+
+    assert scheduler.select(profile) is None
+
+
+def test_scheduler_respects_context_capacity():
+    from app.orchestrator.resources import ResourceRegistry, ResourceSpec
+    from app.orchestrator.router import analyze_task
+    from app.orchestrator.scheduler import Scheduler
+
+    registry = ResourceRegistry()
+
+    registry.register(ResourceSpec(
+        id="small",
+        kind="llm",
+        capabilities=["chat"],
+        metadata={"context_window": 100},
+    ))
+
+    scheduler = Scheduler(registry)
+
+    profile = analyze_task(
+        "x" * 1000,
+    )
+
+    assert scheduler.select(profile) is None

@@ -707,3 +707,45 @@ async def test_run_until_complete_runs_independent_tasks_in_parallel(monkeypatch
     assert state.tasks["task_a"].status == "completed"
     assert state.tasks["task_b"].status == "completed"
     assert state.is_complete()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_task_role_reaches_router(monkeypatch):
+    from app.orchestrator.dynamic import run_task
+
+    state = ProblemState("Test role-aware routing")
+    state.add_task(Task(
+        id="task_1",
+        description="Solve this mathematical problem",
+        role="mathematician",
+    ))
+
+    captured = {}
+
+    class Candidate:
+        provider_id = "fake-provider"
+
+        class Model:
+            id = "fake-model"
+
+        model = Model()
+
+    async def fake_rank(adapters, profile, **kwargs):
+        captured["role"] = profile.role
+        return [Candidate()]
+
+    async def fake_run(*args, **kwargs):
+        return FakeResult()
+
+    monkeypatch.setattr(
+        "app.orchestrator.dynamic.rank_candidates",
+        fake_rank,
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.dynamic.run_tool_agent",
+        fake_run,
+    )
+
+    await run_task(state, "task_1", adapters=[])
+
+    assert captured["role"] == "mathematician"

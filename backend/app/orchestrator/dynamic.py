@@ -178,7 +178,55 @@ async def run_task(
             )
         )
 
+    role_instructions = {
+        "mathematician": (
+            "Act as a mathematician. Prioritize precise definitions, "
+            "derivations, proof obligations, edge cases, and explicit "
+            "logical dependencies. Distinguish conjecture from proof."
+        ),
+        "programmer": (
+            "Act as a programmer. Prefer executable tests, minimal "
+            "reproducers, algorithms, complexity analysis, and concrete "
+            "implementation evidence when appropriate."
+        ),
+        "researcher": (
+            "Act as a researcher. Gather and compare relevant evidence, "
+            "identify competing explanations, and clearly separate "
+            "established information from speculation."
+        ),
+        "fact_checker": (
+            "Act as a fact checker. Focus on independently checking "
+            "claims, assumptions, definitions, and evidence. Flag claims "
+            "that cannot be established from the available evidence."
+        ),
+        "critic": (
+            "Act as a critical reviewer. Search actively for weaknesses, "
+            "hidden assumptions, logical gaps, and alternative explanations."
+        ),
+        "counterexample_hunter": (
+            "Act as a counterexample hunter. Try to break the current "
+            "claim with edge cases, adversarial examples, or small explicit "
+            "instances."
+        ),
+        "verifier": (
+            "Act as a verifier. Attempt to independently establish whether "
+            "the relevant claim follows from the available evidence."
+        ),
+        "synthesizer": (
+            "Act as a synthesizer. Reconcile compatible findings while "
+            "preserving contradictions and uncertainty."
+        ),
+    }
+
+    role_instruction = role_instructions.get(
+        task.role.strip().lower(),
+        "Act as a general specialist focused on the assigned investigation.",
+    )
+
     prompt_parts.append(
+        "SPECIALIST ROLE:\n"
+        f"{task.role or 'general specialist'}\n\n"
+        f"ROLE-SPECIFIC INSTRUCTIONS:\n{role_instruction}\n\n"
         "WORKER INSTRUCTIONS:\n"
         "Do not independently solve the entire original problem unless "
         "that is the assigned task.\n\n"
@@ -216,7 +264,7 @@ async def run_task(
 
     ranked = await rank_candidates(
         adapters,
-        analyze_task(task.description),
+        analyze_task(task.description, role=task.role),
         n=1,
         diverse=True,
     )
