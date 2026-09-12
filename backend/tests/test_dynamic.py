@@ -749,3 +749,89 @@ async def test_dynamic_task_role_reaches_router(monkeypatch):
     await run_task(state, "task_1", adapters=[])
 
     assert captured["role"] == "mathematician"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_task_uses_scheduler_selected_resource():
+    from app.orchestrator.dynamic import run_task
+    from app.orchestrator.state import ProblemState, Task
+
+    state = ProblemState(problem="Test scheduling integration")
+    state.add_task(
+        Task(
+            id="task_1",
+            description="Analyze the mathematical structure",
+            role="mathematician",
+        )
+    )
+
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, model_id, capabilities):
+            self.id = model_id
+            self.capabilities = capabilities
+            self.context_window = 32768
+            self.free_tier = True
+
+    class FakeAdapter:
+        def __init__(self, instance_id, capabilities):
+            self.instance_id = instance_id
+            self.provider_type = "fake"
+            self.label = instance_id
+            self.enabled = True
+            self._models = [FakeModel(f"{instance_id}-model", capabilities)]
+
+        async def get_models(self):
+            return self._models
+
+    adapters = [
+        FakeAdapter("generic", ["chat"]),
+        FakeAdapter("reasoning", ["chat", "reasoning"]),
+    ]
+
+    async def fake_rank(adapters, profile, **kwargs):
+        seen["adapters"] = [a.instance_id for a in adapters]
+
+        from app.orchestrator.router import Candidate
+
+        adapter = adapters[0]
+        model = (await adapter.get_models())[0]
+
+        return [
+            Candidate(
+                provider_id=adapter.instance_id,
+                provider_type=adapter.provider_type,
+                provider_label=adapter.label,
+                model=model,
+                score=1.0,
+                reasons=[],
+                cooling=False,
+            )
+        ]
+
+    async def fake_run(*args, **kwargs):
+        from app.providers.base import GenerationResult, Usage
+
+        return GenerationResult(
+            text="scheduled result",
+            model="reasoning-model",
+            provider="fake",
+            usage=Usage(),
+        )
+
+    import app.orchestrator.dynamic as dynamic
+
+    original_rank = dynamic.rank_candidates
+    original_run = dynamic.run_tool_agent
+
+    dynamic.rank_candidates = fake_rank
+    dynamic.run_tool_agent = fake_run
+
+    try:
+        await run_task(state, "task_1", adapters=adapters)
+    finally:
+        dynamic.rank_candidates = original_rank
+        dynamic.run_tool_agent = original_run
+
+    assert seen["adapters"] == ["reasoning"]

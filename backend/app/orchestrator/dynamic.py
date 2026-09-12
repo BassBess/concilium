@@ -8,9 +8,11 @@ from typing import Any
 
 from ..providers.base import ChatMessage, GenerationResult
 from .planner import LLMPlanner, Planner
-from .router import analyze_task, rank_candidates
+from .router import analyze_task, rank_candidates, filter_adapters_by_resource
 from .runner import AgentSpec, ModelRef, run_tool_agent
 from .state import Contribution, ProblemState, Task
+from .resources import build_resource_registry
+from .scheduler import Scheduler
 
 
 
@@ -262,12 +264,41 @@ async def run_task(
         )
     ]
 
+    profile = analyze_task(
+        task.description,
+        role=task.role,
+    )
+
+    # First choose the computational resource.
+    # The existing router still chooses the actual model inside that resource.
+    registry = await build_resource_registry(adapters)
+    scheduler = Scheduler(registry)
+    assignment = scheduler.select(profile)
+
+    selected_adapters = adapters
+
+    if assignment is not None:
+        selected_adapters = filter_adapters_by_resource(
+            adapters,
+            assignment.resource.id,
+        )
+
     ranked = await rank_candidates(
-        adapters,
-        analyze_task(task.description, role=task.role),
+        selected_adapters,
+        profile,
         n=1,
         diverse=True,
     )
+
+    # Preserve the previous global-router behavior if the scheduler cannot
+    # produce a usable resource.
+    if not ranked and selected_adapters is not adapters:
+        ranked = await rank_candidates(
+            adapters,
+            profile,
+            n=1,
+            diverse=True,
+        )
 
     if not ranked:
         state.set_task_status(task_id, "failed")
