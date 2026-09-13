@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from typing import Any
 
 from .resources import ResourceAssignment, ResourceRegistry, ResourceSpec
 from .router import TaskProfile
@@ -21,11 +23,16 @@ class Scheduler:
     ecosystem.
     """
 
-    def __init__(self, registry: ResourceRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: ResourceRegistry | None = None,
+        health_provider: Callable[[ResourceSpec], dict[str, Any]] | None = None,
+    ) -> None:
         self.registry = registry or ResourceRegistry()
+        self.health_provider = health_provider
 
-    @staticmethod
     def _score(
+        self,
         resource: ResourceSpec,
         profile: TaskProfile,
     ) -> ResourceAssignment | None:
@@ -73,6 +80,40 @@ class Scheduler:
 
             if cost == 0:
                 reasons.append("zero estimated cost")
+
+        if self.health_provider is not None:
+            health = self.health_provider(resource)
+
+            if health.get("in_cooldown"):
+                return None
+
+            failures = int(health.get("consecutive_failures", 0) or 0)
+            rate_limits = int(health.get("rate_limits", 0) or 0)
+            retries = int(health.get("retries", 0) or 0)
+
+            if failures:
+                penalty = min(3.0, failures * 0.75)
+                score -= penalty
+                reasons.append(f"{failures} consecutive failure(s)")
+
+            if rate_limits:
+                penalty = min(2.0, rate_limits * 0.25)
+                score -= penalty
+                reasons.append(f"{rate_limits} rate limit(s)")
+
+            if retries:
+                penalty = min(1.0, retries * 0.1)
+                score -= penalty
+
+            avg_latency = health.get("avg_latency_ms")
+            if avg_latency is not None:
+                latency = max(1.0, float(avg_latency))
+                if latency < 1000:
+                    score += 0.75
+                    reasons.append("healthy recent latency")
+                elif latency > 10000:
+                    score -= 0.75
+                    reasons.append("high recent latency")
 
         role = profile.role.lower().strip()
 

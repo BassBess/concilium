@@ -199,6 +199,72 @@ class QuotaManager:
         else:
             self._states.clear()
 
+    # -- scheduler health ----------------------------------------------------
+    def health(self, adapter, model: str | None = None) -> dict[str, Any]:
+        """Return lightweight runtime health information for scheduling."""
+        provider = adapter.type_key
+
+        if model is not None:
+            st = self.state(self.key(provider, model))
+            now = time.time()
+
+            avg_latency = (
+                sum(st.latencies_ms) / len(st.latencies_ms)
+                if st.latencies_ms
+                else None
+            )
+
+            return {
+                "provider": provider,
+                "model": model,
+                "in_cooldown": st.cooldown_until > now,
+                "consecutive_failures": st.consecutive_failures,
+                "successes": st.successes,
+                "rate_limits": st.rate_limits,
+                "retries": st.retries,
+                "avg_latency_ms": avg_latency,
+            }
+
+        states = [
+            st
+            for key, st in self._states.items()
+            if key.startswith(f"{provider}/")
+        ]
+
+        if not states:
+            return {
+                "provider": provider,
+                "in_cooldown": False,
+                "consecutive_failures": 0,
+                "successes": 0,
+                "rate_limits": 0,
+                "retries": 0,
+                "avg_latency_ms": None,
+            }
+
+        now = time.time()
+        latencies = [
+            latency
+            for st in states
+            for latency in st.latencies_ms
+        ]
+
+        return {
+            "provider": provider,
+            "in_cooldown": any(st.cooldown_until > now for st in states),
+            "consecutive_failures": max(
+                st.consecutive_failures for st in states
+            ),
+            "successes": sum(st.successes for st in states),
+            "rate_limits": sum(st.rate_limits for st in states),
+            "retries": sum(st.retries for st in states),
+            "avg_latency_ms": (
+                sum(latencies) / len(latencies)
+                if latencies
+                else None
+            ),
+        }
+
     # -- persistence ---------------------------------------------------------
     async def record_usage_row(self, provider: str, model: str, *, kind: str = "chat",
                                input_tokens: int = 0, output_tokens: int = 0, cost: float = 0.0,
